@@ -83,6 +83,11 @@ Actions: `list`, `view`, `create`, `update`, `archive`, `unarchive`
 ### `linear_milestone`
 Actions: `list`, `view`, `create`, `update`, `delete`
 
+### `linear_ticket_monitor`
+Actions: `start`, `status`, `check`, `stop`, `stop-all`
+
+Watches Linear issues and emits push notifications when new comments (and replies), status transitions, or label/assignee/priority changes occur. `start` accepts a single issue key/ID or an array, plus an optional `interval` (seconds, minimum 30, default 60). The monitor auto-stops when an issue transitions to a completed/canceled state. Use `status` to list watched issues, `check` to poll immediately, and `stop`/`stop-all` to stop watching. This is a fork-only feature; the upstream package excludes daemon/polling runtimes.
+
 ## CLI usage
 
 If installed globally via ```npm install -g @fink-andreas/pi-linear-tools```, CLI command ```pi-linear-tools``` is available:

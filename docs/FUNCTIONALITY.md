@@ -9,13 +9,19 @@ Included:
 - issue/project/milestone tools powered by `@linear/sdk`
 - issue start flow with optional git branch creation/switch
 - settings persistence for API key/default team/project team mapping
+- ticket change monitor (`linear_ticket_monitor`) — polls watched issues and emits push notifications on new comments, status transitions, and label/assignee/priority changes (fork-only; see below)
 
-Excluded:
+Excluded (upstream):
 - daemon runtime
-- polling loop
 - systemd service installation/control
 - tmux/process session management
 - RPC process lifecycle management
+
+> **Fork-only monitor:** the `elecnix/pi-linear-tools` fork adds `linear_ticket_monitor`,
+> an in-process polling monitor (no daemon, no separate process). It batches all
+> watched issues into a single GraphQL query per poll, caches the last-seen
+> comment/history ids per issue to avoid refetching unchanged history, and never
+> polls faster than every 30s to respect Linear's per-minute complexity budget.
 
 ## Core modules
 

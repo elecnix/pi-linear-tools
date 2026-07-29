@@ -78,6 +78,8 @@ import {
 } from '../src/handlers.js';
 import { authenticate, getAccessToken, logout } from '../src/auth/index.js';
 import { withMilestoneScopeHint } from '../src/error-hints.js';
+import { getSharedMonitor, resetSharedMonitor } from '../src/monitor.js';
+import { resolveIssue } from '../src/linear.js';
 
 let cachedApiKey = null;
 const INCLUDE_USAGE_SUMMARY = String(process.env.PI_LINEAR_TOOLS_USAGE_SUMMARY || '').toLowerCase() === 'true';
@@ -1083,6 +1085,138 @@ async function registerLinearTools(pi) {
     },
   });
 
+  pi.registerTool({
+    name: 'linear_ticket_monitor',
+    label: 'Linear Ticket Monitor',
+    description: 'Monitor Linear issues for changes (new comments, status transitions, label/assignee/priority changes) and emit push notifications.',
+    promptSnippet: 'Monitor Linear issues for changes (new comments, status transitions, label/assignee/priority changes) with start/status/check/stop actions',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['start', 'status', 'check', 'stop', 'stop-all'],
+          description: 'Action to perform: start watching issue(s), list watched issues, trigger an immediate poll, or stop watching.',
+        },
+        issues: {
+          description: 'Issue key (ABC-123) or Linear issue ID, or an array of them. Required for start/stop. Ignored for status/check/stop-all.',
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+        },
+        interval: {
+          type: 'integer',
+          description: 'Poll interval in seconds (minimum 30, default 60). Lower values are clamped to 30 to respect Linear rate limits.',
+          minimum: 30,
+          multipleOf: 1,
+        },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    renderResult: renderMarkdownResult,
+    async execute(_toolCallId, params) {
+      return executeToolSafely('Linear ticket monitor operation failed', async () => {
+        const { isRateLimited, resetAt } = checkAndClearRateLimit();
+        if (isRateLimited) {
+          return buildRateLimitToolResult({ requestsResetAt: resetAt.getTime(), type: 'Ratelimited' }, { cached: true });
+        }
+
+        const monitor = getSharedMonitor();
+
+        const notify = (line, event) => {
+          pi.sendMessage({
+            customType: 'pi-linear-tools',
+            content: line,
+            display: true,
+          });
+          debug('[pi-linear-tools] monitor event', { type: event?.type, identifier: event?.issue?.identifier });
+        };
+
+        const clientFactory = async () => createAuthenticatedClient();
+
+        switch (params.action) {
+          case 'start': {
+            if (!params.issues) {
+              throw new Error('Missing required field: issues');
+            }
+            const result = await monitor.start({
+              issues: params.issues,
+              interval: params.interval,
+              notify,
+              clientFactory,
+              resolveIssue: async (client, ref) => {
+                try {
+                  return await resolveIssue(client, ref);
+                } catch {
+                  return null;
+                }
+              },
+            });
+            const lines = [
+              `## Linear ticket monitor`,
+              '',
+              result.started.length > 0
+                ? `Started watching ${result.started.length} issue${result.started.length === 1 ? '' : 's'}: ${result.started.join(', ')}`
+                : 'No new issues added to monitoring.',
+            ];
+            if (result.alreadyWatched.length > 0) {
+              lines.push(`_Already watched: ${result.alreadyWatched.join(', ')}_`);
+            }
+            lines.push('');
+            lines.push(`Polling every ${Math.max(30, Number(params.interval) || 60)}s. Use \`linear_ticket_monitor action=status\` to list, \`action=check\` to poll now, or \`action=stop\` to stop watching.`);
+            return toToolTextResult(lines.join('\n'), {
+              started: result.started,
+              alreadyWatched: result.alreadyWatched,
+              intervalSeconds: Math.max(30, Number(params.interval) || 60),
+            });
+          }
+          case 'status': {
+            const watched = monitor.status();
+            if (watched.length === 0) {
+              return toToolTextResult('No Linear issues are currently being monitored.', { watched: [] });
+            }
+            const lines = [`## Monitored Linear issues (${watched.length})`, ''];
+            for (const entry of watched) {
+              const tags = [entry.hasBaseline ? 'baseline set' : 'no baseline yet'];
+              if (entry.closed) tags.push('closed');
+              lines.push(`- **${entry.ref}** _[${tags.join(', ')}]_`);
+            }
+            return toToolTextResult(lines.join('\n'), { watched });
+          }
+          case 'check': {
+            await monitor.check();
+            return toToolTextResult('Triggered an immediate poll of all monitored Linear issues. New change notifications (if any) were emitted as messages.', { checked: true });
+          }
+          case 'stop': {
+            if (!params.issues) {
+              throw new Error('Missing required field: issues. Use action=stop-all to stop all.');
+            }
+            const result = monitor.stop(params.issues);
+            return toToolTextResult(
+              result.stopped.length > 0
+                ? `Stopped watching: ${result.stopped.join(', ')}`
+                : 'No matching issues were being monitored.',
+              { stopped: result.stopped }
+            );
+          }
+          case 'stop-all': {
+            const result = monitor.stopAll();
+            return toToolTextResult(
+              result.stopped.length > 0
+                ? `Stopped watching all ${result.stopped.length} issue${result.stopped.length === 1 ? '' : 's'}: ${result.stopped.join(', ')}`
+                : 'No issues were being monitored.',
+              { stopped: result.stopped }
+            );
+          }
+          default:
+            throw new Error(`Unknown action: ${params.action}`);
+        }
+      });
+    },
+  });
+
   if (await shouldExposeMilestoneTool()) {
     pi.registerTool({
       name: 'linear_milestone',
@@ -1304,6 +1438,7 @@ export default async function piLinearToolsExtension(pi) {
         '  linear_project (list/view/create/update/delete/archive/unarchive)',
         '  linear_project_update (list/view/create/update/archive/unarchive)',
         '  linear_team (list)',
+        '  linear_ticket_monitor (start/status/check/stop/stop-all)',
       ];
 
       if (showMilestoneTool) {
