@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+- **Linear ticket change monitor**: Added `linear_ticket_monitor` tool (actions: `start`, `status`, `check`, `stop`, `stop-all`) that watches Linear issues and emits push notifications on new comments (and replies), status transitions, and label/assignee/priority changes. Auto-stops when an issue transitions to a completed/canceled state. Batches all watched issues into one GraphQL query per poll and caches last-seen comment/history ids to avoid refetching unchanged history. Fork-only; upstream excludes polling runtimes.
+
+### Documentation
+- Updated README and `docs/FUNCTIONALITY.md` to document the monitor and note it is fork-only.
+
 ## v0.7.1 (2026-06-09)
 
 Patch release for issue creation milestone assignment and configuration text cleanup.

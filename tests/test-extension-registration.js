@@ -120,6 +120,17 @@ async function testRegistrationIncludesMilestoneWithDefaultApiKeyMode() {
     assert.ok(teamTool);
     assert.equal(teamTool.description, 'Interact with Linear teams.');
 
+    const monitorTool = pi.tools.get('linear_ticket_monitor');
+    assert.ok(monitorTool);
+    assert.equal(monitorTool.description, 'Monitor Linear issues for changes (new comments, status transitions, label/assignee/priority changes) and emit push notifications.');
+    assert.ok(monitorTool.promptSnippet);
+    assert.ok(monitorTool.parameters.properties.action.enum.includes('start'));
+    assert.ok(monitorTool.parameters.properties.action.enum.includes('status'));
+    assert.ok(monitorTool.parameters.properties.action.enum.includes('check'));
+    assert.ok(monitorTool.parameters.properties.action.enum.includes('stop'));
+    assert.ok(monitorTool.parameters.properties.action.enum.includes('stop-all'));
+    assert.equal(monitorTool.parameters.properties.interval.minimum, 30);
+
     const milestoneTool = pi.tools.get('linear_milestone');
     assert.ok(milestoneTool);
     assert.equal(milestoneTool.description, 'Interact with Linear project milestones.');
