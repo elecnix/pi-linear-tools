@@ -130,6 +130,9 @@ async function testRegistrationIncludesMilestoneWithDefaultApiKeyMode() {
     assert.ok(monitorTool.parameters.properties.action.enum.includes('stop'));
     assert.ok(monitorTool.parameters.properties.action.enum.includes('stop-all'));
     assert.equal(monitorTool.parameters.properties.interval.minimum, 30);
+    assert.ok('status' in monitorTool.parameters.properties, 'monitor tool exposes status param');
+    assert.ok('comments' in monitorTool.parameters.properties, 'monitor tool exposes comments param');
+    assert.equal(monitorTool.parameters.properties.comments.minimum, 0);
 
     const milestoneTool = pi.tools.get('linear_milestone');
     assert.ok(milestoneTool);

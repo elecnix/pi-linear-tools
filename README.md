@@ -88,6 +88,13 @@ Actions: `start`, `status`, `check`, `stop`, `stop-all`
 
 Watches Linear issues and emits push notifications when new comments (and replies), status transitions, or label/assignee/priority changes occur. `start` accepts a single issue key/ID or an array, plus an optional `interval` (seconds, minimum 30, default 60). The monitor auto-stops when an issue transitions to a completed/canceled state. Use `status` to list watched issues, `check` to poll immediately, and `stop`/`stop-all` to stop watching. This is a fork-only feature; the upstream package excludes daemon/polling runtimes.
 
+`start` also accepts optional conflict-detection args, evaluated **once** against the issue's live state on the first poll after starting:
+
+- `status` — an expected workflow-state name (e.g. `"In Progress"`). If the live status differs, a `status_conflict` event fires right away; if omitted, the current status is reported.
+- `comments` — an expected comment count. If the live count differs, a `comment_count_conflict` event fires right away; if omitted, the current count is reported.
+
+Once armed, ongoing changes (a new comment, a status move) are still reported by the regular per-poll diff.
+
 ## CLI usage
 
 If installed globally via ```npm install -g @fink-andreas/pi-linear-tools```, CLI command ```pi-linear-tools``` is available:
