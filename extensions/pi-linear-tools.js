@@ -1111,6 +1111,16 @@ async function registerLinearTools(pi) {
           minimum: 30,
           multipleOf: 1,
         },
+        status: {
+          type: 'string',
+          description: 'Expected workflow-state name (e.g. "In Progress"). If the live status differs, a conflict event is emitted immediately on start. Omit to get an initial event reporting the current status.',
+        },
+        comments: {
+          type: 'integer',
+          description: 'Expected number of comments on the issue. If the live count differs, a conflict event is emitted immediately on start. Omit to get an initial event reporting the current count.',
+          minimum: 0,
+          multipleOf: 1,
+        },
       },
       required: ['action'],
       additionalProperties: false,
@@ -1144,6 +1154,8 @@ async function registerLinearTools(pi) {
             const result = await monitor.start({
               issues: params.issues,
               interval: params.interval,
+              status: params.status,
+              comments: params.comments,
               notify,
               clientFactory,
               resolveIssue: async (client, ref) => {
@@ -1154,12 +1166,21 @@ async function registerLinearTools(pi) {
                 }
               },
             });
+            const expectations = [];
+            if (params.status) expectations.push(`status=${params.status}`);
+            if (params.comments != null) expectations.push(`comments=${params.comments}`);
+            const expectationLine =
+              expectations.length > 0
+                ? `_Conflict detection armed: ${expectations.join(', ')}_`
+                : '_No expectations set — current status/comment count will be reported on start._';
             const lines = [
               `## Linear ticket monitor`,
               '',
               result.started.length > 0
                 ? `Started watching ${result.started.length} issue${result.started.length === 1 ? '' : 's'}: ${result.started.join(', ')}`
                 : 'No new issues added to monitoring.',
+              '',
+              expectationLine,
             ];
             if (result.alreadyWatched.length > 0) {
               lines.push(`_Already watched: ${result.alreadyWatched.join(', ')}_`);
@@ -1170,6 +1191,8 @@ async function registerLinearTools(pi) {
               started: result.started,
               alreadyWatched: result.alreadyWatched,
               intervalSeconds: Math.max(30, Number(params.interval) || 60),
+              expectStatus: params.status ?? null,
+              expectComments: params.comments ?? null,
             });
           }
           case 'status': {

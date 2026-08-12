@@ -26,6 +26,12 @@ export const MIN_POLL_INTERVAL_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_HISTORY_LIMIT = 25;
 const DEFAULT_COMMENT_LIMIT = 25;
+// Comment page size used when a live comment count must be accurate (the
+// informational/conflict counts report the true number of comments). Linear's
+// CommentConnection exposes no totalCount, so the count is the number of
+// returned nodes — this page keeps that accurate for realistic issues. The
+// smaller DEFAULT_COMMENT_LIMIT still bounds per-poll cost for change diffing.
+const COMMENT_COUNT_PAGE = 100;
 
 /**
  * State type names Linear treats as terminal (auto-stop the monitor).
@@ -236,6 +242,51 @@ export function diffIssueSnapshot(prev, next) {
   return events;
 }
 
+/**
+ * Evaluate the optional conflict-detection expectations supplied at start time
+ * against a freshly-fetched baseline snapshot.
+ *
+ * `status` is an expected workflow-state name and `comments` an expected
+ * comment count. When an expectation is given and the live value differs, a
+ * conflict event is emitted immediately — the agent is told right away that
+ * reality diverged from what it expected (mirrors ghpr-monitor's conflict
+ * detection). When an expectation is omitted, an informational event reporting
+ * the live value is emitted instead, so the current state is always surfaced.
+ *
+ * @param {object|null} snapshot - A snapshot produced by `createIssueSnapshot`.
+ * @param {{status?: string|null, comments?: number|null}} expectations
+ * @returns {Array<object>} expectation events (conflict or informational)
+ */
+export function evaluateExpectations(snapshot, expectations = {}) {
+  if (!snapshot) return [];
+
+  const events = [];
+  const issue = { identifier: snapshot.identifier, title: snapshot.title, url: snapshot.url };
+  const expectedStatus =
+    expectations.status == null || String(expectations.status).trim() === '' ? null : String(expectations.status);
+  const expectedComments = expectations.comments == null ? null : Number(expectations.comments);
+  const actualStatus = snapshot.state?.name ?? null;
+  const actualComments = (snapshot.comments || []).length;
+
+  if (actualStatus !== null) {
+    if (expectedStatus !== null && actualStatus !== expectedStatus) {
+      events.push({ type: 'status_conflict', expectedStatus, actualStatus, issue });
+    } else if (expectedStatus === null) {
+      events.push({ type: 'current_status', actualStatus, issue });
+    }
+  }
+
+  if (expectedComments !== null) {
+    if (actualComments !== expectedComments) {
+      events.push({ type: 'comment_count_conflict', expectedComments, actualComments, issue });
+    }
+  } else {
+    events.push({ type: 'current_comment_count', actualComments, issue });
+  }
+
+  return events;
+}
+
 const PRIORITY_LABELS = ['None', 'Urgent', 'High', 'Medium', 'Low'];
 
 function priorityLabel(value) {
@@ -298,6 +349,18 @@ export function summarizeEvent(event) {
     }
     case 'closed': {
       return `Issue ${prefix}${title} closed (${event.toState?.name || 'Done'}) — auto-stopping monitor`;
+    }
+    case 'status_conflict': {
+      return `Status conflict on ${prefix}${title} — expected "${event.expectedStatus}", currently "${event.actualStatus}"`;
+    }
+    case 'current_status': {
+      return `Current status of ${prefix}${title}: "${event.actualStatus}"`;
+    }
+    case 'comment_count_conflict': {
+      return `Comment-count conflict on ${prefix}${title} — expected ${event.expectedComments} comment(s), found ${event.actualComments}`;
+    }
+    case 'current_comment_count': {
+      return `${prefix}${title} has ${event.actualComments} comment(s)`;
     }
     default:
       return `Change detected on ${prefix}${title}`;
@@ -451,7 +514,7 @@ export async function fetchWatchedIssues(client, watched, options = {}) {
  */
 export class TicketMonitor {
   constructor() {
-    /** @type {Map<string, {ref: string, id: string|null, snapshot: object|null, closed: boolean}>} */
+    /** @type {Map<string, {ref: string, id: string|null, snapshot: object|null, closed: boolean, expectStatus: string|null, expectComments: number|null, evaluatedExpectations: boolean}>} */
     this._watched = new Map();
     this._interval = null;
     this._intervalMs = DEFAULT_POLL_INTERVAL_MS;
@@ -469,6 +532,10 @@ export class TicketMonitor {
    * @param {Function} [params.notify] - (message) => void, called per event
    * @param {Function} params.clientFactory - () => Promise<LinearClient>
    * @param {Function} [params.resolveIssue] - (client, ref) => Promise<{id}>
+   * @param {string} [params.status] - expected workflow-state name; if the live
+   *   status differs, a conflict event fires immediately on the baseline poll.
+   * @param {number} [params.comments] - expected comment count; if the live count
+   *   differs, a conflict event fires immediately on the baseline poll.
    * @returns {{started: string[], alreadyWatched: string[]}}
    */
   async start(params) {
@@ -480,6 +547,19 @@ export class TicketMonitor {
     this._resolveIssue = params.resolveIssue || null;
     this._intervalMs = intervalMs;
 
+    // Normalize conflict-detection expectations. `status` is coerced to a
+    // trimmed string; `comments` must be a non-negative integer when provided.
+    const expectStatus =
+      params.status == null || String(params.status).trim() === '' ? null : String(params.status).trim();
+    let expectComments = null;
+    if (params.comments != null) {
+      const n = Number(params.comments);
+      if (!Number.isInteger(n) || n < 0) {
+        throw new Error(`Invalid expected comment count: ${params.comments} (must be a non-negative integer)`);
+      }
+      expectComments = n;
+    }
+
     const started = [];
     const alreadyWatched = [];
     for (const raw of refs) {
@@ -488,7 +568,17 @@ export class TicketMonitor {
         alreadyWatched.push(desc.ref);
         continue;
       }
-      this._watched.set(desc.ref, { ...desc, snapshot: null, closed: false });
+      this._watched.set(desc.ref, {
+        ...desc,
+        snapshot: null,
+        closed: false,
+        expectStatus,
+        expectComments,
+        // Every newly started issue gets one baseline expectation pass: it
+        // reports the live status/comment count (when no expectation is set)
+        // or emits a conflict when reality diverges from an expectation.
+        evaluatedExpectations: false,
+      });
       started.push(desc.ref);
     }
 
@@ -515,6 +605,9 @@ export class TicketMonitor {
         id: entry.id,
         closed: entry.closed,
         hasBaseline: entry.snapshot !== null,
+        expectStatus: entry.expectStatus ?? null,
+        expectComments: entry.expectComments ?? null,
+        evaluatedExpectations: entry.evaluatedExpectations,
       });
     }
     return out;
@@ -582,8 +675,29 @@ export class TicketMonitor {
 
     const client = await this._clientFactory();
     const watched = [...this._watched.values()];
+
+    // Size the comment fetch so any expected comment count (and one extra to
+    // detect an overrun) is actually returned. On the baseline poll — where
+    // the informational/conflict comment count is reported — use a larger
+    // count page so the number reflects reality rather than the diff limit.
+    // Later polls only diff new comments, so the smaller page bounds cost.
+    let commentLimit = DEFAULT_COMMENT_LIMIT;
+    let needAccurateCount = false;
+    for (const w of watched) {
+      if (w.expectComments != null) {
+        commentLimit = Math.max(commentLimit, w.expectComments + 1);
+      }
+      if (!w.evaluatedExpectations) {
+        needAccurateCount = true;
+      }
+    }
+    if (needAccurateCount) {
+      commentLimit = Math.max(commentLimit, COMMENT_COUNT_PAGE);
+    }
+
     const issues = await fetchWatchedIssues(client, watched, {
       resolveIssue: this._resolveIssue,
+      commentLimit,
     });
 
     // Index returned issues by id, and map back to watched refs.
@@ -610,6 +724,22 @@ export class TicketMonitor {
       }
 
       const nextSnapshot = createIssueSnapshot(raw);
+
+      // Evaluate conflict-detection expectations once, on the baseline poll
+      // right after start, so divergence from what the caller expected surfaces
+      // immediately (and current state is reported when no expectation is set).
+      if (!entry.evaluatedExpectations) {
+        for (const event of evaluateExpectations(nextSnapshot, {
+          status: entry.expectStatus,
+          comments: entry.expectComments,
+        })) {
+          if (this._notify) {
+            this._notify(summarizeEvent(event), event);
+          }
+        }
+        entry.evaluatedExpectations = true;
+      }
+
       const events = diffIssueSnapshot(entry.snapshot, nextSnapshot);
       entry.snapshot = nextSnapshot;
 
