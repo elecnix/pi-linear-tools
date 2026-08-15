@@ -413,6 +413,7 @@ export async function executeIssueList(client, params) {
       assigneeId,
       teamId,
       limit: params.limit || 20,
+      query: params.query || null,
     });
 
     if (issues.length === 0) {

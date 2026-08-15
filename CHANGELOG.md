@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+- **Linear ticket change monitor**: Added `linear_ticket_monitor` tool (actions: `start`, `status`, `check`, `stop`, `stop-all`) that watches Linear issues and emits push notifications on new comments (and replies), status transitions, and label/assignee/priority changes. Auto-stops when an issue transitions to a completed/canceled state. Batches all watched issues into one GraphQL query per poll and caches last-seen comment/history ids to avoid refetching unchanged history. Fork-only; upstream excludes polling runtimes.
+- **Monitor conflict detection**: `linear_ticket_monitor start` accepts optional `status` (expected workflow-state name) and `comments` (expected comment count) args. If the live value differs from the expectation, a conflict event is emitted immediately on the first poll; if omitted, the live status/comment count is reported. Gives caller-side checks comparable to `ghpr-monitor` conflict detection.
+
+### Documentation
+- Updated README and `docs/FUNCTIONALITY.md` to document the monitor and note it is fork-only.
 ## v0.7.3 (2026-07-28)
 
 Patch release that fixes Linear issue-relation updates for OAuth users.
